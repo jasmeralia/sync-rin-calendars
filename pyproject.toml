@@ -1,0 +1,44 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "W",
+]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+ignore_missing_imports = true
+pretty = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pylint.main]
+py-version = "3.12"
+persistent = false
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = [
+  "missing-module-docstring",
+  "missing-function-docstring",
+  "missing-class-docstring",
+  "too-many-locals",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-arguments",
+  "too-many-instance-attributes",
+  "too-many-return-statements",
+  "too-many-lines",
+  "too-few-public-methods",
+  "duplicate-code",
+  "broad-exception-caught",
+  "broad-exception-raised",
+]
