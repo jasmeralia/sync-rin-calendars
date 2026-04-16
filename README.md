@@ -131,6 +131,9 @@ Build:
 docker build -t rincity-calendar-sync .
 ```
 
+GitHub Actions publishes the image to `ghcr.io/<owner>/<repo>` on every push to `master`
+and on every pushed tag. A git tag such as `v1.2.3` becomes the image tag `1.2.3`.
+
 Run:
 
 ```bash
