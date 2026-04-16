@@ -9,6 +9,6 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-COPY sync_rin_calendars.py pyproject.toml ./
+COPY sync_rin_calendars.py ./
 
 ENTRYPOINT ["python", "sync_rin_calendars.py"]
