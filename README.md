@@ -73,7 +73,12 @@ The script supports file-based credentials or raw JSON values.
 - `SYNC_START_DATE`
 - `SYNC_MONTHS`
 - `DRY_RUN`
+- `SLEEP_INTERVAL`
 - `PREVIEW_EMAIL_HTML_PATH`
+
+If `SLEEP_INTERVAL` is set, the script runs once immediately and then keeps running,
+sleeping between syncs. Supported suffixes are `s`, `m`, `h`, and `d`, so values like
+`30m`, `12h`, and `1d` are valid. If it is unset, the script exits after the first run.
 
 ### Google OAuth
 
@@ -91,9 +96,9 @@ If `GOOGLE_TOKEN_JSON` is used, refreshed credentials stay in memory for that ru
 
 ## Email Notifications
 
-Notifications are optional and use Gmail SMTP by default.
+Notifications are optional and use Gmail SMTP by default. They are enabled
+automatically when both `SMTP_FROM` and `SMTP_TO` are set.
 
-- `EMAIL_NOTIFICATIONS_ENABLED`
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_USE_STARTTLS`
@@ -115,20 +120,12 @@ Recommended for Gmail:
 - `SMTP_USE_STARTTLS=true`
 - Use a Gmail app password, not your normal login password.
 
-## Cron
-
-Use the virtualenv interpreter explicitly:
-
-```cron
-*/30 * * * * /home/morgan/gcal/.venv/bin/python /home/morgan/gcal/sync_rin_calendars.py >> /home/morgan/gcal/sync.log 2>&1
-```
-
 ## Docker
 
 Build:
 
 ```bash
-docker build -t rincity-calendar-sync .
+docker build -t sync-rin-calendars .
 ```
 
 GitHub Actions publishes the image to `ghcr.io/<owner>/<repo>` on every push to `master`
@@ -141,7 +138,8 @@ docker run --rm \
   -e GOOGLE_CALENDAR_ID='your-calendar-id' \
   -e GOOGLE_CREDENTIALS_JSON='{"installed":{...}}' \
   -e GOOGLE_TOKEN_JSON='{"token":"...","refresh_token":"...","token_uri":"https://oauth2.googleapis.com/token","client_id":"...","client_secret":"...","scopes":["https://www.googleapis.com/auth/calendar"]}' \
-  rincity-calendar-sync --dry-run
+  -e SLEEP_INTERVAL='1d' \
+  sync-rin-calendars --dry-run
 ```
 
 See [docker-compose.example.yml](./docker-compose.example.yml) for a direct-environment-variable example suitable for TrueNAS SCALE app configuration.
@@ -162,7 +160,6 @@ Individual targets:
 ## Files
 
 - `sync_rin_calendars.py`: main sync script
-- `extract_rin_calendar.py`: MFC Share event extractor
 - `Dockerfile`: container image
 - `requirements.txt`: runtime dependencies
 - `requirements-dev.txt`: runtime + developer tooling dependencies

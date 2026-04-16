@@ -1,10 +1,10 @@
 PYTHON ?= .venv/bin/python
-PIP ?= .venv/bin/pip
-RUFF ?= .venv/bin/ruff
-PYLINT ?= .venv/bin/pylint
-MYPY ?= .venv/bin/mypy
+PIP ?= $(PYTHON) -m pip
+RUFF ?= $(PYTHON) -m ruff
+PYLINT ?= $(PYTHON) -m pylint
+MYPY ?= $(PYTHON) -m mypy
 
-SOURCES = sync_rin_calendars.py extract_rin_calendar.py
+SOURCES = sync_rin_calendars.py
 
 .PHONY: venv install run dry-run lint style typecheck
 

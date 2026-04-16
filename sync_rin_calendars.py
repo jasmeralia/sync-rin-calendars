@@ -9,8 +9,10 @@ import os
 import re
 import smtplib
 import sys
+import time
 import traceback
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
@@ -21,9 +23,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from extract_rin_calendar import DEFAULT_URL, build_fetch_url, extract_events, fetch_html
-
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+DEFAULT_URL = "https://share.myfreecams.com/RinCity/calendar"
 
 DEFAULT_CALENDAR_ID = (
     "c_6c31b0f68c7d1a73f3443e2a89d8408b940b5953f731293e37f9a1450c13bad6"
@@ -69,6 +70,30 @@ BIRTHDAY_RE = re.compile(r"\bbirthday\b", re.IGNORECASE)
 
 TRANSITION_KINDS = {"no_stream", "stream", "possible_stream"}
 LEGACY_MANAGED_TITLES = {"stream", "no stream"}
+HTTP_USER_AGENT = "sync-rin-calendars/1.0 (+https://github.com/jasmeralia/sync-rin-calendars)"
+
+DAY_CONTENT_RE = re.compile(
+    r"<div class='day-content'[^>]*data-date='(?P<date>\d{4}-\d{2}-\d{2})'[^>]*>"
+    r"(?P<body>.*?)"
+    r"</div>\s*<!-- day-content -->",
+    re.DOTALL,
+)
+EVENT_RE = re.compile(
+    r"<a class=\"(?P<class>[^\"]*\bevent\b[^\"]*)\"[^>]*"
+    r"data-modal-url-value=\"(?P<modal>[^\"]+)\"[^>]*>"
+    r"(?P<body>.*?)"
+    r"</a>",
+    re.DOTALL,
+)
+TITLE_RE = re.compile(
+    r"<span class=['\"]title(?:\s+text-truncate)?['\"]>\s*(?P<body>.*?)\s*</span>",
+    re.DOTALL,
+)
+START_TIME_RE = re.compile(
+    r"<span class=['\"]start-time['\"]>\s*(?P<body>.*?)\s*</span>",
+    re.DOTALL,
+)
+DURATION_PART_RE = re.compile(r"(?P<value>\d+)(?P<unit>[smhd])", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -141,7 +166,6 @@ class MfcEvent:
 
 @dataclass(frozen=True)
 class NotificationConfig:
-    enabled: bool
     host: str
     port: int
     username: str | None
@@ -153,6 +177,10 @@ class NotificationConfig:
     notify_on_changes: bool
     notify_on_error: bool
     subject_prefix: str
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.from_addr and self.to_addrs)
 
 
 @dataclass
@@ -314,6 +342,36 @@ def getenv_bool(name: str, default: bool) -> bool:
     raise ValueError(f"invalid boolean value for {name}: {value}")
 
 
+def parse_sleep_interval(value: str) -> int:
+    normalized = value.strip().lower()
+    if not normalized:
+        raise ValueError("SLEEP_INTERVAL must not be empty")
+
+    total_seconds = 0
+    position = 0
+    for match in DURATION_PART_RE.finditer(normalized):
+        if match.start() != position:
+            raise ValueError(
+                "invalid SLEEP_INTERVAL format; use values like 30m, 12h, or 1d"
+            )
+        magnitude = int(match.group("value"))
+        unit = match.group("unit")
+        multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        total_seconds += magnitude * multiplier
+        position = match.end()
+
+    if position != len(normalized) or total_seconds <= 0:
+        raise ValueError("SLEEP_INTERVAL must be a positive duration like 30m or 1d")
+    return total_seconds
+
+
+def load_sleep_interval_seconds() -> int | None:
+    value = getenv_str("SLEEP_INTERVAL")
+    if value is None:
+        return None
+    return parse_sleep_interval(value)
+
+
 def split_recipients(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
@@ -346,6 +404,15 @@ def month_floor(value: dt.date) -> dt.date:
     return value.replace(day=1)
 
 
+def build_fetch_url(base_url: str, list_view: bool = False) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if list_view:
+        query["list_view"] = ["true"]
+    new_query = urllib.parse.urlencode(query, doseq=True)
+    return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+
 def build_month_url(base_url: str, month_start: dt.date) -> str:
     list_url = build_fetch_url(base_url, list_view=True)
     parsed = urllib.parse.urlparse(list_url)
@@ -373,6 +440,18 @@ def build_event_share_url(modal_url: str, event_date: dt.date) -> str:
             "",
         )
     )
+
+
+def fetch_html(url: str) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": HTTP_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read().decode("utf-8")
 
 
 def strip_html_fragment(fragment: str) -> str:
@@ -420,6 +499,39 @@ def extract_event_description(modal_html: str) -> str:
         if description:
             return description
     return ""
+
+
+def extract_events(page_html: str) -> list[dict[str, str | None]]:
+    events: list[dict[str, str | None]] = []
+
+    for day_match in DAY_CONTENT_RE.finditer(page_html):
+        event_date = html.unescape(day_match.group("date"))
+        day_body = day_match.group("body")
+
+        for event_match in EVENT_RE.finditer(day_body):
+            event_body = event_match.group("body")
+            title_match = TITLE_RE.search(event_body)
+            start_time_match = START_TIME_RE.search(event_body)
+            if not title_match or not start_time_match:
+                continue
+
+            title = strip_html_fragment(title_match.group("body"))
+            start_time = strip_html_fragment(start_time_match.group("body"))
+            css_classes = event_match.group("class")
+            event_type = "all-day" if " all-day " in f" {css_classes} " else "timed"
+            modal_url = html.unescape(event_match.group("modal"))
+
+            events.append(
+                {
+                    "date": event_date,
+                    "title": title,
+                    "event_type": event_type,
+                    "start_time": None if event_type == "all-day" else start_time,
+                    "modal_url": modal_url,
+                }
+            )
+
+    return events
 
 
 def hydrate_mfc_event(raw_event: dict[str, str | None], event_date: dt.date) -> MfcEvent:
@@ -775,12 +887,18 @@ def update_google_event(service, calendar_id: str, event_id: str, body: dict):
 
 
 def load_notification_config() -> NotificationConfig:
+    username = getenv_str("SMTP_USERNAME")
+    password = getenv_str("SMTP_PASSWORD")
+    if bool(username) != bool(password):
+        raise ValueError(
+            "SMTP_USERNAME and SMTP_PASSWORD must both be set when SMTP auth is configured"
+        )
+
     return NotificationConfig(
-        enabled=getenv_bool("EMAIL_NOTIFICATIONS_ENABLED", False),
         host=getenv_str("SMTP_HOST", "smtp.gmail.com") or "smtp.gmail.com",
         port=getenv_int("SMTP_PORT", 587),
-        username=getenv_str("SMTP_USERNAME"),
-        password=getenv_str("SMTP_PASSWORD"),
+        username=username,
+        password=password,
         from_addr=getenv_str("SMTP_FROM"),
         to_addrs=split_recipients(getenv_str("SMTP_TO")),
         use_starttls=getenv_bool("SMTP_USE_STARTTLS", True),
@@ -804,7 +922,7 @@ def send_email(config: NotificationConfig, subject: str, html_body: str) -> None
     if not config.enabled:
         return
     if not config.from_addr or not config.to_addrs:
-        raise ValueError("SMTP_FROM and SMTP_TO are required when notifications are enabled")
+        raise ValueError("SMTP_FROM and SMTP_TO are required to send notifications")
 
     message = EmailMessage()
     message["Subject"] = subject
@@ -1073,37 +1191,49 @@ def run_sync(args: argparse.Namespace) -> tuple[SyncSummary, list[MfcEvent]]:
 
 
 def main() -> int:
+    sleep_interval_seconds = load_sleep_interval_seconds()
     args = parse_args()
     notification_config = load_notification_config()
     if args.preview_email_html:
         args.dry_run = True
+        sleep_interval_seconds = None
 
-    try:
-        summary, mfc_events = run_sync(args)
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    while True:
         try:
-            send_error_email(notification_config, args, exc)
-        except Exception as email_exc:
-            print(f"warning: failed to send error email: {email_exc}", file=sys.stderr)
-        return 1
+            summary, mfc_events = run_sync(args)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            try:
+                send_error_email(notification_config, args, exc)
+            except Exception as email_exc:
+                print(f"warning: failed to send error email: {email_exc}", file=sys.stderr)
+            if sleep_interval_seconds is None:
+                return 1
+            print(
+                f"Sleeping for {sleep_interval_seconds} seconds before retry.",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_interval_seconds)
+            continue
 
-    if args.preview_email_html:
-        preview_path = Path(args.preview_email_html).expanduser().resolve()
         try:
-            written_path = write_preview_html(preview_path, summary, mfc_events)
-        except Exception as preview_exc:
-            print(f"warning: failed to write preview HTML: {preview_exc}", file=sys.stderr)
-            return 1
-        print(f"Preview HTML written to {written_path}")
-        return 0
+            if args.preview_email_html:
+                preview_path = Path(args.preview_email_html).expanduser().resolve()
+                written_path = write_preview_html(preview_path, summary, mfc_events)
+                print(f"Preview HTML written to {written_path}")
+                return 0
 
-    try:
-        send_summary_email(notification_config, summary)
-    except Exception as email_exc:
-        print(f"warning: failed to send summary email: {email_exc}", file=sys.stderr)
-        return 1
-    return 0
+            send_summary_email(notification_config, summary)
+        except Exception as post_run_exc:
+            print(f"warning: post-run action failed: {post_run_exc}", file=sys.stderr)
+            if sleep_interval_seconds is None:
+                return 1
+
+        if sleep_interval_seconds is None:
+            return 0
+
+        print(f"Sleeping for {sleep_interval_seconds} seconds before next run.")
+        time.sleep(sleep_interval_seconds)
 
 
 if __name__ == "__main__":

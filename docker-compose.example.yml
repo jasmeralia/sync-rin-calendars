@@ -1,20 +1,20 @@
 services:
-  rincity-calendar-sync:
+  sync-rin-calendars:
     build:
       context: .
       dockerfile: Dockerfile
-    image: rincity-calendar-sync:latest
+    image: sync-rin-calendars:latest
     environment:
       MFC_CALENDAR_URL: "https://share.myfreecams.com/RinCity/calendar"
       GOOGLE_CALENDAR_ID: "c_6c31b0f68c7d1a73f3443e2a89d8408b940b5953f731293e37f9a1450c13bad6@group.calendar.google.com"
       SYNC_MONTHS: "2"
       DRY_RUN: "false"
+      SLEEP_INTERVAL: "1d"
 
       # Raw JSON values are supported for TrueNAS SCALE app env fields.
       GOOGLE_CREDENTIALS_JSON: '{"installed":{"client_id":"replace-me","project_id":"replace-me","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_secret":"replace-me","redirect_uris":["http://localhost"]}}'
       GOOGLE_TOKEN_JSON: '{"token":"replace-me","refresh_token":"replace-me","token_uri":"https://oauth2.googleapis.com/token","client_id":"replace-me","client_secret":"replace-me","scopes":["https://www.googleapis.com/auth/calendar"]}'
 
-      EMAIL_NOTIFICATIONS_ENABLED: "true"
       SMTP_HOST: "smtp.gmail.com"
       SMTP_PORT: "587"
       SMTP_USE_STARTTLS: "true"
