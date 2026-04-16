@@ -104,6 +104,7 @@ class MfcEvent:
     start_time: str | None
     source_url: str
     modal_url: str
+    end_date: dt.date | None = None
     description: str = ""
 
     @property
@@ -141,13 +142,22 @@ class MfcEvent:
     @property
     def sync_key(self) -> str:
         time_part = "all-day" if self.is_all_day else normalize_text(self.start_time or "")
-        return f"{self.date.isoformat()}|{self.kind}|{time_part}|{self.normalized_title}"
+        if self.final_date == self.date:
+            return f"{self.date.isoformat()}|{self.kind}|{time_part}|{self.normalized_title}"
+        return (
+            f"{self.date.isoformat()}|{self.final_date.isoformat()}|{self.kind}|"
+            f"{time_part}|{self.normalized_title}"
+        )
+
+    @property
+    def final_date(self) -> dt.date:
+        return self.end_date or self.date
 
     def start_end(self) -> tuple[dict[str, str], dict[str, str]]:
         if self.is_all_day:
             return (
                 {"date": self.date.isoformat()},
-                {"date": (self.date + dt.timedelta(days=1)).isoformat()},
+                {"date": (self.final_date + dt.timedelta(days=1)).isoformat()},
             )
 
         if not self.start_time:
@@ -501,8 +511,8 @@ def extract_event_description(modal_html: str) -> str:
     return ""
 
 
-def extract_events(page_html: str) -> list[dict[str, str | None]]:
-    events: list[dict[str, str | None]] = []
+def extract_events(page_html: str) -> list[dict[str, str | bool | None]]:
+    events: list[dict[str, str | bool | None]] = []
 
     for day_match in DAY_CONTENT_RE.finditer(page_html):
         event_date = html.unescape(day_match.group("date"))
@@ -518,27 +528,90 @@ def extract_events(page_html: str) -> list[dict[str, str | None]]:
             title = strip_html_fragment(title_match.group("body"))
             start_time = strip_html_fragment(start_time_match.group("body"))
             css_classes = event_match.group("class")
+            class_tokens = set(css_classes.split())
             event_type = "all-day" if " all-day " in f" {css_classes} " else "timed"
             modal_url = html.unescape(event_match.group("modal"))
+            parsed_modal_url = urllib.parse.urlparse(modal_url)
+            event_id = Path(parsed_modal_url.path).name
 
             events.append(
                 {
                     "date": event_date,
+                    "event_id": event_id,
                     "title": title,
                     "event_type": event_type,
                     "start_time": None if event_type == "all-day" else start_time,
                     "modal_url": modal_url,
+                    "is_multi_day": "multi-day" in class_tokens,
+                    "starts_this_day": "starts-this-day" in class_tokens,
+                    "ends_this_day": "ends-this-day" in class_tokens,
                 }
             )
 
     return events
 
 
-def hydrate_mfc_event(raw_event: dict[str, str | None], event_date: dt.date) -> MfcEvent:
+def collapse_multi_day_events(
+    raw_events: list[dict[str, str | bool | None]],
+) -> list[dict[str, str | bool | None]]:
+    collapsed: list[dict[str, str | bool | None]] = []
+    active_multi_day: dict[tuple[str, str, str], dict[str, str | bool | None]] = {}
+
+    sorted_events = sorted(
+        raw_events,
+        key=lambda event: (
+            dt.date.fromisoformat(str(event["date"])),
+            str(event["event_id"]),
+            str(event["title"]),
+        ),
+    )
+
+    for raw_event in sorted_events:
+        event_date = dt.date.fromisoformat(str(raw_event["date"]))
+        is_multi_day = bool(raw_event["is_multi_day"])
+        if raw_event["event_type"] != "all-day" or not is_multi_day:
+            collapsed.append(raw_event)
+            continue
+
+        key = (
+            str(raw_event["event_id"]),
+            str(raw_event["title"]),
+            str(raw_event["event_type"]),
+        )
+        current = active_multi_day.get(key)
+        starts_this_day = bool(raw_event["starts_this_day"])
+        ends_this_day = bool(raw_event["ends_this_day"])
+
+        if current is None or starts_this_day:
+            current = dict(raw_event)
+            current["end_date"] = raw_event["date"]
+            active_multi_day[key] = current
+        else:
+            previous_date = dt.date.fromisoformat(str(current["end_date"]))
+            if event_date != previous_date + dt.timedelta(days=1):
+                collapsed.append(current)
+                current = dict(raw_event)
+                current["end_date"] = raw_event["date"]
+                active_multi_day[key] = current
+            else:
+                current["end_date"] = raw_event["date"]
+
+        if ends_this_day:
+            collapsed.append(current)
+            active_multi_day.pop(key, None)
+
+    collapsed.extend(active_multi_day.values())
+    return collapsed
+
+
+def hydrate_mfc_event(
+    raw_event: dict[str, str | bool | None], event_date: dt.date
+) -> MfcEvent:
     title = str(raw_event["title"]).strip()
     event_type = str(raw_event["event_type"])
     start_time = raw_event["start_time"]
     modal_url = absolute_mfc_url(str(raw_event["modal_url"]))
+    end_date_raw = raw_event.get("end_date")
     modal_html = fetch_html(modal_url)
     description = extract_event_description(modal_html)
     return MfcEvent(
@@ -548,6 +621,7 @@ def hydrate_mfc_event(raw_event: dict[str, str | None], event_date: dt.date) -> 
         start_time=None if start_time is None else str(start_time),
         source_url=build_event_share_url(modal_url, event_date),
         modal_url=modal_url,
+        end_date=None if end_date_raw is None else dt.date.fromisoformat(str(end_date_raw)),
         description=description,
     )
 
@@ -555,8 +629,9 @@ def hydrate_mfc_event(raw_event: dict[str, str | None], event_date: dt.date) -> 
 def fetch_mfc_events(
     calendar_url: str, range_start: dt.date, range_end: dt.date
 ) -> list[MfcEvent]:
-    seen: set[tuple[str, str, str, str | None]] = set()
+    seen: set[tuple[str, str, str, str, str | None]] = set()
     events: list[MfcEvent] = []
+    raw_events: list[dict[str, str | bool | None]] = []
     month_start = month_floor(range_start)
 
     while month_start < range_end:
@@ -566,18 +641,23 @@ def fetch_mfc_events(
             event_date = dt.date.fromisoformat(str(raw_event["date"]))
             if event_date < range_start or event_date >= range_end:
                 continue
-
-            title = str(raw_event["title"]).strip()
-            event_type = str(raw_event["event_type"])
-            start_time = raw_event["start_time"]
-            key = (event_date.isoformat(), title, event_type, start_time)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            events.append(hydrate_mfc_event(raw_event, event_date))
+            raw_events.append(raw_event)
 
         month_start = add_months(month_start, 1)
+
+    for raw_event in collapse_multi_day_events(raw_events):
+        event_date = dt.date.fromisoformat(str(raw_event["date"]))
+        end_date = str(raw_event.get("end_date") or raw_event["date"])
+        title = str(raw_event["title"]).strip()
+        event_type = str(raw_event["event_type"])
+        start_time_raw = raw_event["start_time"]
+        start_time = None if start_time_raw is None else str(start_time_raw)
+        key = (event_date.isoformat(), end_date, title, event_type, start_time)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        events.append(hydrate_mfc_event(raw_event, event_date))
 
     return sorted(
         events,
