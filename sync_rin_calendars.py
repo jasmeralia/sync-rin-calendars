@@ -70,7 +70,7 @@ BIRTHDAY_RE = re.compile(r"\bbirthday\b", re.IGNORECASE)
 
 TRANSITION_KINDS = {"no_stream", "stream", "possible_stream"}
 LEGACY_MANAGED_TITLES = {"stream", "no stream"}
-HTTP_USER_AGENT = "sync-rin-calendars/1.0 (+https://github.com/jasmeralia/sync-rin-calendars)"
+HTTP_USER_AGENT = "rincity-calendar-sync/1.0 (+https://github.com/jasmeralia/rincity-calendar-sync)"
 
 DAY_CONTENT_RE = re.compile(
     r"<div class='day-content'[^>]*data-date='(?P<date>\d{4}-\d{2}-\d{2})'[^>]*>"

@@ -125,11 +125,12 @@ Recommended for Gmail:
 Build:
 
 ```bash
-docker build -t sync-rin-calendars .
+docker build -t rincity-calendar-sync .
 ```
 
-GitHub Actions publishes the image to `ghcr.io/<owner>/<repo>` on every push to `master`
-and on every pushed tag. A git tag such as `v1.2.3` becomes the image tag `1.2.3`.
+GitHub Actions publishes the image to `ghcr.io/<owner>/rincity-calendar-sync` on every
+push to `master`, every pushed tag, and manual workflow runs against a selected branch
+or tag. A git tag such as `v1.2.3` becomes the image tag `1.2.3`.
 
 Run:
 
@@ -139,7 +140,7 @@ docker run --rm \
   -e GOOGLE_CREDENTIALS_JSON='{"installed":{...}}' \
   -e GOOGLE_TOKEN_JSON='{"token":"...","refresh_token":"...","token_uri":"https://oauth2.googleapis.com/token","client_id":"...","client_secret":"...","scopes":["https://www.googleapis.com/auth/calendar"]}' \
   -e SLEEP_INTERVAL='1d' \
-  sync-rin-calendars --dry-run
+  rincity-calendar-sync --dry-run
 ```
 
 See [docker-compose.example.yml](./docker-compose.example.yml) for a direct-environment-variable example suitable for TrueNAS SCALE app configuration.

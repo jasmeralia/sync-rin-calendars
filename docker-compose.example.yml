@@ -1,9 +1,9 @@
 services:
-  sync-rin-calendars:
+  rincity-calendar-sync:
     build:
       context: .
       dockerfile: Dockerfile
-    image: sync-rin-calendars:latest
+    image: ghcr.io/jasmeralia/rincity-calendar-sync:latest
     environment:
       MFC_CALENDAR_URL: "https://share.myfreecams.com/RinCity/calendar"
       GOOGLE_CALENDAR_ID: "c_6c31b0f68c7d1a73f3443e2a89d8408b940b5953f731293e37f9a1450c13bad6@group.calendar.google.com"
