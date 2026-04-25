@@ -153,11 +153,17 @@ class MfcEvent:
     def final_date(self) -> dt.date:
         return self.end_date or self.date
 
-    def start_end(self) -> tuple[dict[str, str], dict[str, str]]:
+    def start_end(self) -> tuple[dict[str, str | None], dict[str, str | None]]:
+        # Patch sends nulls for the unused field type so Google clears it
+        # when switching an event between all-day and timed.
         if self.is_all_day:
             return (
-                {"date": self.date.isoformat()},
-                {"date": (self.final_date + dt.timedelta(days=1)).isoformat()},
+                {"date": self.date.isoformat(), "dateTime": None, "timeZone": None},
+                {
+                    "date": (self.final_date + dt.timedelta(days=1)).isoformat(),
+                    "dateTime": None,
+                    "timeZone": None,
+                },
             )
 
         if not self.start_time:
@@ -169,8 +175,8 @@ class MfcEvent:
             self.date, dt.time(hour=23, minute=59), tzinfo=LOCAL_TZ
         )
         return (
-            {"dateTime": start_dt.isoformat(), "timeZone": TZ},
-            {"dateTime": end_dt.isoformat(), "timeZone": TZ},
+            {"date": None, "dateTime": start_dt.isoformat(), "timeZone": TZ},
+            {"date": None, "dateTime": end_dt.isoformat(), "timeZone": TZ},
         )
 
 
@@ -326,6 +332,10 @@ class SyncSummary:
 
 def normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def strip_null_keys(value: dict) -> dict:
+    return {k: v for k, v in value.items() if v is not None}
 
 
 def getenv_str(name: str, default: str | None = None) -> str | None:
@@ -928,10 +938,10 @@ def classify_event_diffs(existing: dict, desired: dict) -> dict[str, dict]:
             "desired": desired["colorId"],
         }
 
-    existing_start = existing.get("start", {})
-    existing_end = existing.get("end", {})
-    desired_start = desired["start"]
-    desired_end = desired["end"]
+    existing_start = strip_null_keys(existing.get("start", {}))
+    existing_end = strip_null_keys(existing.get("end", {}))
+    desired_start = strip_null_keys(desired["start"])
+    desired_end = strip_null_keys(desired["end"])
     if existing_start != desired_start or existing_end != desired_end:
         if existing_start != desired_start:
             visible["start"] = {"existing": existing_start, "desired": desired_start}
